@@ -5,6 +5,7 @@ ARG TF_NEED_CUDA
 ARG TF_NAME
 ARG HOROVOD_VERSION
 ARG BUILD_IMAGE
+ARG PROTOBUF_VERSION
 FROM ${BUILD_IMAGE} as base_install
 
 # Required for setuptools v50.0.0
@@ -47,7 +48,7 @@ RUN python -m pip install -r requirements.txt
 
 RUN python -m pip install tensorflow-io
 
-RUN python -m pip install --upgrade protobuf==3.20.0
+RUN python -m pip install --upgrade protobuf==$PROTOBUF_VERSION
 
 COPY ./ /recommenders-addons
 WORKDIR /recommenders-addons
@@ -94,7 +95,7 @@ ARG TF_NAME
 
 RUN python -m pip install --upgrade pip
 RUN python -m pip install --default-timeout=1000 $TF_NAME==$TF_VERSION
-RUN python -m pip install --upgrade protobuf==3.20.0
+RUN python -m pip install --upgrade protobuf====$PROTOBUF_VERSION
 
 COPY --from=make_wheel /recommenders-addons/wheelhouse/ /recommenders-addons/wheelhouse/
 RUN pip install /recommenders-addons/wheelhouse/*.whl
