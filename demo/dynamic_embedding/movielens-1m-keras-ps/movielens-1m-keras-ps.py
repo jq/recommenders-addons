@@ -10,7 +10,6 @@ try:
 except:
   from tensorflow.keras.optimizers import Adam
 
-flags = tf.compat.v1.app.flags
 FLAGS = flags.FLAGS
 flags.DEFINE_string(
     'ps_list', "localhost:2220, localhost:2221",
@@ -132,10 +131,11 @@ class Runner():
         })
     ratings = dataset.map(
         lambda x: tf.one_hot(tf.cast(x['user_rating'] - 1, dtype=tf.int64), 5))
-    dataset = dataset.zip((features, ratings))
+    dataset = tf.data.Dataset.zip((features, ratings))
     dataset = dataset.shuffle(4096, reshuffle_each_iteration=False)
     if batch_size > 1:
       dataset = dataset.batch(batch_size)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
     return dataset
 
   def train(self):
@@ -237,7 +237,7 @@ def start_chief(config):
   cluster_spec = tf.train.ClusterSpec(config["cluster"])
   cluster_resolver = tf.distribute.cluster_resolver.SimpleClusterResolver(
       cluster_spec, task_type="chief", task_id=0)
-  strategy = tf.distribute.experimental.ParameterServerStrategy(
+  strategy = tf.distribute.ParameterServerStrategy(
       cluster_resolver)
   runner = Runner(strategy=strategy,
                   train_bs=64,
@@ -253,11 +253,10 @@ def start_worker(task_id, config):
   print("worker config", config)
   cluster_spec = tf.train.ClusterSpec(config["cluster"])
 
-  sess_config = tf.compat.v1.ConfigProto()
-  sess_config.intra_op_parallelism_threads = 4
-  sess_config.inter_op_parallelism_threads = 4
+  # sess_config = tf.compat.v1.ConfigProto()
+  # sess_config.intra_op_parallelism_threads = 4
+  # sess_config.inter_op_parallelism_threads = 4
   server = tf.distribute.Server(cluster_spec,
-                                config=sess_config,
                                 protocol='grpc',
                                 job_name="worker",
                                 task_index=task_id)
@@ -268,11 +267,11 @@ def start_ps(task_id, config):
   print("ps config", config)
   cluster_spec = tf.train.ClusterSpec(config["cluster"])
 
-  sess_config = tf.compat.v1.ConfigProto()
-  sess_config.intra_op_parallelism_threads = 4
-  sess_config.inter_op_parallelism_threads = 4
+  # sess_config = tf.compat.v1.ConfigProto()
+  # sess_config.intra_op_parallelism_threads = 4
+  # sess_config.inter_op_parallelism_threads = 4
   server = tf.distribute.Server(cluster_spec,
-                                config=sess_config,
+                                # config=sess_config,
                                 protocol='grpc',
                                 job_name="ps",
                                 task_index=task_id)
@@ -307,4 +306,5 @@ def main(argv):
 
 
 if __name__ == "__main__":
-  tf.compat.v1.app.run()
+  app.run(main)
+
