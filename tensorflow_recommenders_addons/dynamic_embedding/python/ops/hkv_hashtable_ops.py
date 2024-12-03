@@ -170,7 +170,7 @@ class HkvHashTable(LookupInterface):
     # explicitly specified.
     use_node_name_sharing = self._checkpoint and self._shared_name is None
 
-    with ops.device(self._device):
+    with ops.device(self._device[0]):
       table_ref = hkv_ops.tfra_hkv_hash_table_of_tensors(
           shared_name=self._shared_name,
           use_node_name_sharing=use_node_name_sharing,

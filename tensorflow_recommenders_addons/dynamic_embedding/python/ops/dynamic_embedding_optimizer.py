@@ -574,8 +574,6 @@ def DynamicEmbeddingOptimizer(self, bp_v2=False, synchronous=False, **kwargs):
     if global_step is None:
       raise ValueError("Global step is required to check staleness")
 
-    trainable_wrapper_grad_and_vars = []
-
     with backend.name_scope(name or self._name):
       test_unaggregated_lambda = lambda x: isinstance(x[1], de.TrainableWrapper)
       dense_grads_and_vars_aggregated, trainable_wrapper_grad_and_vars = trainable_wrapper_filter(

@@ -49,6 +49,7 @@ from tensorflow.python.ops import resource_variable_ops
 from tensorflow_recommenders_addons import dynamic_embedding as de
 from tensorflow_recommenders_addons.dynamic_embedding.python.ops.embedding_weights import EmbeddingWeights, \
   TrainableWrapper
+from tensorflow_recommenders_addons.dynamic_embedding.python.ops.grad_accumulator import grad_accumulator, GradStore
 
 if version.parse(tf.__version__) >= version.parse("2.10"):
   from tensorflow.python.trackable import base as trackable
@@ -372,6 +373,7 @@ class HvdVariable(EmbeddingWeights):
       with_unique=True,
       with_secondary_unique=True,
       mpi_size=None,
+      accum_size=1,
   ):
     self.name = name
     self.embedding_size = embedding_size
@@ -389,6 +391,11 @@ class HvdVariable(EmbeddingWeights):
       self._mpi_size = self.hvd.size()
     else:
       self._mpi_size = mpi_size
+    self._accum_size = accum_size
+    if accum_size > 1:
+      table = grad_accumulator.get_accum_table(100, 16)
+      self._grad_store = GradStore(table, None)
+
 
   def verify_embedding_weights(self, sparse_ids, sparse_weights=None):
     EmbeddingWeights.verify_embedding_param_weights(self.shadow.params,
@@ -439,6 +446,10 @@ class HvdVariable(EmbeddingWeights):
     else:
       lookup_result = de.shadow_ops.embedding_lookup(self.shadow, reloc_ids)
     lookup_result, _ = self.hvd.alltoall(lookup_result, splits=remote_sizes)
+    if self._accum_size > 1:
+      self._grad_store.keys = ids
+      # use output lookup_result as key, and accum_alltoall_grad will use it to get grad_store
+      grad_accumulator.forward(lookup_result, self._grad_store)
 
     input_shape = tf.shape(ids)
     recover_shape = tf.concat((input_shape, (self.embedding_size,)), axis=0)
