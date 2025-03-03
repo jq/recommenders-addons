@@ -23,6 +23,16 @@ py_test(
 )
 
 py_test(
+    name = "ps_test",
+    srcs = ["ps_test.py"],
+    python_version = "PY3",
+    srcs_version = "PY3",
+    deps = [
+        "//tensorflow_recommenders_addons",
+    ],
+)
+
+py_test(
     name = "dynamic_embedding_ops_test",
     srcs = ["dynamic_embedding_ops_test.py"],
     python_version = "PY3",
