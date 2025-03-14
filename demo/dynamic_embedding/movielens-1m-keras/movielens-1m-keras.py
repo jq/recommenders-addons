@@ -7,8 +7,10 @@ from absl import app
 from tensorflow_recommenders_addons import dynamic_embedding as de
 try:
   from tensorflow.keras.legacy.optimizers import Adam
+  from tensorflow.keras.legacy.optimizers import Adagrad
 except:
   from tensorflow.keras.optimizers import Adam
+  from tensorflow.keras.optimizers import Adagrad
 
 flags.DEFINE_string('mode', 'train', 'Select the running mode: train or test.')
 flags.DEFINE_string('model_dir', 'model_dir',
@@ -32,6 +34,17 @@ input_spec = {
     ], dtype=tf.int64, name='movie_id')
 }
 
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
 
 class DualChannelsDeepModel(tf.keras.Model):
 
@@ -119,7 +132,8 @@ def train():
   dataset = get_dataset(batch_size=32)
   model = DualChannelsDeepModel(FLAGS.embedding_size, FLAGS.embedding_size,
                                 tf.keras.initializers.RandomNormal(0.0, 0.5))
-  optimizer = Adam(1E-3)
+  # optimizer = Adam(1E-3)
+  optimizer = Adagrad(1E-3)
   optimizer = de.DynamicEmbeddingOptimizer(optimizer)
 
   auc = tf.keras.metrics.AUC(num_thresholds=1000)

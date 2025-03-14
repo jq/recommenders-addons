@@ -34,6 +34,17 @@ input_spec = {
     ], dtype=tf.int64, name='movie_id')
 }
 
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
 
 class DualChannelsDeepModel(tf.keras.Model):
 
@@ -240,10 +251,10 @@ def start_chief(config):
   strategy = tf.distribute.experimental.ParameterServerStrategy(
       cluster_resolver)
   runner = Runner(strategy=strategy,
-                  train_bs=64,
+                  train_bs=128,
                   test_bs=1,
                   epochs=2,
-                  steps_per_epoch=10,
+                  steps_per_epoch=500,
                   model_dir=None,
                   export_dir=None)
   runner.train()

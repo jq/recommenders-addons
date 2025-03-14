@@ -23,6 +23,9 @@ from tensorflow_recommenders_addons import dynamic_embedding as de
 
 from tensorflow import version as tf_version
 from tensorflow.python.distribute import central_storage_strategy
+
+from tensorflow_recommenders_addons.dynamic_embedding.python.train.utils import worker_devices
+
 if version.parse(tf_version.VERSION) >= version.parse("2.14"):
   from tensorflow.python.distribute import distribute_lib as distribute_ctx
 else:
@@ -870,7 +873,9 @@ def DynamicEmbeddingOptimizer(self, bp_v2=False, synchronous=False, **kwargs):
 def create_slots(variable, init, slot_name, op_name, bp_v2):
   """Helper function for creating a slot variable for statefull optimizers."""
   if distribute_utils.is_distributed_variable(variable):
-    strategy_devices = variable.distribute_strategy.extended.worker_devices
+    num_tasks = variable.distribute_strategy.extended._num_workers
+    strategy_devices = worker_devices(
+      variable.distribute_strategy.extended.worker_devices, num_tasks, "worker")
     primary = variable._get_on_device_or_primary()
     params_var_ = primary.params
   else:
@@ -941,8 +946,10 @@ def create_slots(variable, init, slot_name, op_name, bp_v2):
           slot_tw_name_replica = "%s/replica_%d" % (slot_tw_name, i)
           full_name_replica = "%s/replica_%d" % (full_name, i)
         with context.device_policy(context.DEVICE_PLACEMENT_SILENT):
-          with tape.stop_recording():
-            slot_variable_impl.as_list().append(
+          from tensorflow.python.eager import backprop
+          with backprop.GradientTape() as tape:
+            with tape.stop_recording():
+              slot_variable_impl.as_list().append(
                 slot_trainable_create_(variable.values[i],
                                        scope_store._vars[full_name],
                                        full_name_replica, slot_tw_name_replica))

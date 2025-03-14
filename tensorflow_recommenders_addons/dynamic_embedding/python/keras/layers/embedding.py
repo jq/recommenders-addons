@@ -29,6 +29,7 @@ from tensorflow_recommenders_addons.dynamic_embedding.python.ops import dynamic_
 from tensorflow.python.keras.utils import tf_utils
 
 from tensorflow_recommenders_addons.dynamic_embedding.python.ops.shadow_embedding_ops import HvdVariable
+from tensorflow_recommenders_addons.dynamic_embedding.python.train.utils import worker_devices
 
 if version.parse(tf.__version__) >= version.parse("2.14"):
   from tensorflow.python.distribute import distribute_lib as distribute_ctx
@@ -226,7 +227,10 @@ class Embedding(Layer):
       if distribute_ctx.has_strategy():
         self.distribute_strategy = distribute_ctx.get_strategy()
       if self.distribute_strategy:
-        strategy_devices = self.distribute_strategy.extended.worker_devices
+        num_tasks = self.distribute_strategy.extended._num_workers
+        strategy_devices = worker_devices(
+          self.distribute_strategy.extended.worker_devices, num_tasks,
+          "worker")
         self.shadow_impl = tf_utils.ListWrapper([])
         for i, strategy_device in enumerate(strategy_devices):
           with ops.device(strategy_device):
