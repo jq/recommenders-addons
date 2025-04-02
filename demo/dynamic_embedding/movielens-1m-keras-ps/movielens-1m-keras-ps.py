@@ -34,6 +34,18 @@ input_spec = {
     ], dtype=tf.int64, name='movie_id')
 }
 
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
+
 
 class DualChannelsDeepModel(tf.keras.Model):
 
@@ -59,11 +71,13 @@ class DualChannelsDeepModel(tf.keras.Model):
         user_embedding_size,
         initializer=embedding_initializer,
         devices=self.devices,
+        with_unique=False,
         name='user_embedding')
     self.movie_embedding = de.keras.layers.SquashedEmbedding(
         movie_embedding_size,
         initializer=embedding_initializer,
         devices=self.devices,
+        with_unique=False,
         name='movie_embedding')
 
     self.dnn1 = tf.keras.layers.Dense(
