@@ -1,4 +1,6 @@
+import json
 import os
+import sys
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
@@ -9,6 +11,9 @@ try:
   from tensorflow.keras.optimizers.legacy import Adam
 except:
   from tensorflow.keras.optimizers import Adam
+
+from tensorflow import distribute as tf_dist
+from tensorflow.python.keras import backend as K
 
 flags = tf.compat.v1.app.flags
 FLAGS = flags.FLAGS
@@ -34,10 +39,23 @@ input_spec = {
     ], dtype=tf.int64, name='movie_id')
 }
 
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
+
 
 class DualChannelsDeepModel(tf.keras.Model):
 
   def __init__(self,
+               strategy=None,
                devices=[],
                user_embedding_size=1,
                movie_embedding_size=1,
@@ -48,9 +66,11 @@ class DualChannelsDeepModel(tf.keras.Model):
       de.enable_inference_mode()
 
     super(DualChannelsDeepModel, self).__init__()
+    self.strategy = strategy
     self.user_embedding_size = user_embedding_size
     self.movie_embedding_size = movie_embedding_size
     self.devices = devices
+    self.built = False
 
     if embedding_initializer is None:
       embedding_initializer = tf.keras.initializers.Zeros()
@@ -64,6 +84,7 @@ class DualChannelsDeepModel(tf.keras.Model):
         movie_embedding_size,
         initializer=embedding_initializer,
         devices=self.devices,
+        # with_unique=False,
         name='movie_embedding')
 
     self.dnn1 = tf.keras.layers.Dense(
@@ -87,14 +108,44 @@ class DualChannelsDeepModel(tf.keras.Model):
         kernel_initializer=tf.keras.initializers.RandomNormal(0.0, 0.1),
         bias_initializer=tf.keras.initializers.RandomNormal(0.0, 0.1))
 
+  def build_model(self,
+                  input_transform=None,
+                  build_optimizer=True,
+                  signature=None):
+    if self.built:
+      return
+
+    if signature is None:
+      def signature():
+        return {
+            'user_id': tf.TensorSpec(shape=[None], dtype=tf.int64, name='user_id'),
+            'movie_id': tf.TensorSpec(shape=[None], dtype=tf.int64, name='movie_id')
+        }
+
+    example = {}
+    for key, spec in signature().items():
+      example[key] = tf.zeros(shape=[1] + list(spec.shape[1:]), dtype=spec.dtype)
+    
+    if input_transform is not None:
+      example = input_transform(example)
+    
+    self.strategy.run(self, args=(example,), kwargs={"training": False})
+
+    
+    # if build_optimizer and hasattr(self, 'optimizer') and self.optimizer is not None:
+    #   with tf.name_scope(self.optimizer.__class__.__name__):
+    #     self.optimizer.build(self.trainable_variables)
+    
+    self.built = True
+    return self
+
   @tf.function
-  def call(self, features):
+  def call(self, features, training=False):
     user_id = tf.reshape(features['user_id'], (-1, 1))
     movie_id = tf.reshape(features['movie_id'], (-1, 1))
     user_latent = self.user_embedding(user_id)
     movie_latent = self.movie_embedding(movie_id)
     latent = tf.concat([user_latent, movie_latent], axis=1)
-
     x = self.dnn1(latent)
     x = self.dnn2(x)
     x = self.dnn3(x)
@@ -122,6 +173,7 @@ class Runner():
     self.steps_per_epoch = steps_per_epoch
     self.model_dir = model_dir
     self.export_dir = export_dir
+    self.test_steps = 10
 
   def get_dataset(self, batch_size=1):
     dataset = tfds.load('movielens/1m-ratings', split='train')
@@ -137,28 +189,33 @@ class Runner():
     if batch_size > 1:
       dataset = dataset.batch(batch_size)
     return dataset
+  def build(self):
+    with self.strategy.scope():
+      model = DualChannelsDeepModel(
+        strategy=self.strategy,
+        devices=self.ps_devices,
+        user_embedding_size=self.embedding_size,
+        movie_embedding_size=self.embedding_size,
+        embedding_initializer=tf.keras.initializers.RandomNormal(0.0, 0.5))
 
+      optimizer = Adam(1E-3)
+      optimizer = de.DynamicEmbeddingOptimizer(optimizer)
+      auc = tf.keras.metrics.AUC(num_thresholds=1000)
+
+      model.compile(optimizer=optimizer,
+                    loss=tf.keras.losses.MeanSquaredError(),
+                    metrics=[auc])
+
+      model.build_model()
+      return model
   def train(self):
     dataset = self.get_dataset(batch_size=self.train_bs)
     dataset = self.strategy.experimental_distribute_dataset(dataset)
-    with self.strategy.scope():
-      model = DualChannelsDeepModel(
-          self.ps_devices, self.embedding_size, self.embedding_size,
-          tf.keras.initializers.RandomNormal(0.0, 0.5))
-      optimizer = Adam(1E-3)
-      optimizer = de.DynamicEmbeddingOptimizer(optimizer)
+    
+    model = self.build()
 
-      auc = tf.keras.metrics.AUC(num_thresholds=1000)
-
-    model.compile(optimizer=optimizer,
-                  loss=tf.keras.losses.MeanSquaredError(),
-                  metrics=[
-                      auc,
-                  ])
-
-    if self.model_dir:
-      if os.path.exists(self.model_dir):
-        model.load_weights(self.model_dir)
+    if self.model_dir and os.path.exists(self.model_dir):
+      model.load_weights(self.model_dir)
 
     model.fit(dataset, epochs=self.epochs, steps_per_epoch=self.steps_per_epoch)
 
@@ -169,8 +226,13 @@ class Runner():
   def export(self):
     with self.strategy.scope():
       model = DualChannelsDeepModel(
-          self.ps_devices, self.embedding_size, self.embedding_size,
-          tf.keras.initializers.RandomNormal(0.0, 0.5))
+          strategy=self.strategy,
+          devices=self.ps_devices, 
+          user_embedding_size=self.embedding_size, 
+          movie_embedding_size=self.embedding_size,
+          embedding_initializer=tf.keras.initializers.RandomNormal(0.0, 0.5))
+      
+      model.build_model(build_optimizer=False)
 
     def save_spec():
       if hasattr(model, 'save_spec'):
@@ -192,6 +254,9 @@ class Runner():
     from tensorflow.python.saved_model import save as tf_save
     K.clear_session()
     de.enable_inference_mode()
+    
+    arg_specs, kwarg_specs = save_spec()
+    
     # Overwrite saved_model.pb file with save_and_return_nodes function to rewrite the calculation graph
     tf_save.save_and_return_nodes(obj=model,
                                   export_dir=self.export_dir,
@@ -208,6 +273,7 @@ class Runner():
 
     dataset = self.get_dataset(batch_size=self.test_bs)
     dataset = self.strategy.experimental_distribute_dataset(dataset)
+
     with self.strategy.scope():
       model = tf.keras.models.load_model(self.export_dir)
     signature = model.signatures['serving_default']
@@ -234,16 +300,20 @@ class Runner():
 def start_chief(config):
   print("chief config", config)
 
-  cluster_spec = tf.train.ClusterSpec(config["cluster"])
-  cluster_resolver = tf.distribute.cluster_resolver.SimpleClusterResolver(
-      cluster_spec, task_type="chief", task_id=0)
-  strategy = tf.distribute.experimental.ParameterServerStrategy(
-      cluster_resolver)
+  # 设置环境变量
+  os.environ["TF_CONFIG"] = json.dumps({
+      "cluster": config["cluster"],
+      "task": {"type": "chief", "index": 0}
+  })
+  
+  # 使用 TFConfigClusterResolver 替代 SimpleClusterResolver
+  cluster_resolver = tf.distribute.cluster_resolver.TFConfigClusterResolver()
+  strategy = tf_dist.experimental.ParameterServerStrategy(cluster_resolver)
   runner = Runner(strategy=strategy,
                   train_bs=64,
                   test_bs=1,
-                  epochs=2,
-                  steps_per_epoch=10,
+                  epochs=1,
+                  steps_per_epoch=1000,
                   model_dir=None,
                   export_dir=None)
   runner.train()
@@ -251,8 +321,15 @@ def start_chief(config):
 
 def start_worker(task_id, config):
   print("worker config", config)
+  
+  # 设置环境变量
+  os.environ["TF_CONFIG"] = json.dumps({
+      "cluster": config["cluster"],
+      "task": {"type": "worker", "index": task_id}
+  })
+  
+  # 先启动服务器，确保端口被正确绑定
   cluster_spec = tf.train.ClusterSpec(config["cluster"])
-
   sess_config = tf.compat.v1.ConfigProto()
   sess_config.intra_op_parallelism_threads = 4
   sess_config.inter_op_parallelism_threads = 4
@@ -261,13 +338,37 @@ def start_worker(task_id, config):
                                 protocol='grpc',
                                 job_name="worker",
                                 task_index=task_id)
+  
+  # 服务器启动后再创建策略和构建模型
+  cluster_resolver = tf.distribute.cluster_resolver.TFConfigClusterResolver()
+  strategy = tf_dist.experimental.ParameterServerStrategy(cluster_resolver)
+  
+  # 构建模型但不启动训练
+  runner = Runner(strategy=strategy,
+                  train_bs=64,
+                  test_bs=1,
+                  epochs=1,
+                  steps_per_epoch=1000,
+                  model_dir=None,
+                  export_dir=None)
+  # 预构建模型
+  runner.build()
+  
+  # 保持服务器运行
   server.join()
 
 
 def start_ps(task_id, config):
   print("ps config", config)
+  
+  # 设置环境变量
+  os.environ["TF_CONFIG"] = json.dumps({
+      "cluster": config["cluster"],
+      "task": {"type": "ps", "index": task_id}
+  })
+  
+  # 启动服务器
   cluster_spec = tf.train.ClusterSpec(config["cluster"])
-
   sess_config = tf.compat.v1.ConfigProto()
   sess_config.intra_op_parallelism_threads = 4
   sess_config.inter_op_parallelism_threads = 4

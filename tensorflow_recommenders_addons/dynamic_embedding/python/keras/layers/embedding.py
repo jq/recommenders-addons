@@ -227,6 +227,9 @@ class Embedding(Layer):
         self.distribute_strategy = distribute_ctx.get_strategy()
       if self.distribute_strategy:
         strategy_devices = self.distribute_strategy.extended.worker_devices
+        tfprint = tf.print("st1:", strategy_devices, output_stream=tf.compat.v1.logging.error)
+        with tf.control_dependencies([tfprint]):
+          pass
         self.shadow_impl = tf_utils.ListWrapper([])
         for i, strategy_device in enumerate(strategy_devices):
           with ops.device(strategy_device):
@@ -261,6 +264,9 @@ class Embedding(Layer):
       self._current_exists = data_structures.NoDependency(
           self.shadow_impl.as_list()[0].exists)
       self.optimizer_vars = self.shadow_impl.as_list()[0]._optimizer_vars
+    tfprint = tf.print("st1 rep:", values_util.get_current_replica_id_as_int(), output_stream=tf.compat.v1.logging.error)
+    with tf.control_dependencies([tfprint]):
+      pass
     if distribute_ctx.has_strategy(
     ) and self.distribute_strategy and 'OneDeviceStrategy' not in str(
         self.distribute_strategy) and not values_util.is_saving_non_distributed(
